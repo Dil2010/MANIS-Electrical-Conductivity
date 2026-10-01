@@ -1,31 +1,27 @@
 # ============================================================
-# MANIS: ELECTRICAL CONDUCTIVITY
-# THEORETICAL MODEL BENCHMARKING AI AGENT
+# MANIS — ELECTRICAL CONDUCTIVITY
+# COLAB: THEORETICAL MODEL BENCHMARKING AI AGENT
 # ============================================================
 # Reads nanofluid_ec_data_clean.csv from Google Drive
 # Tests 5 electrical conductivity correlations against experimental data:
-#   1. Maxwell (1873): full mixing rule, spherical (n=3)
-#   2. Cruz et al.: modified Maxwell (insulating-particle limit, alpha->0)
-#   3. Ganguly et al. (2009): empirical, Al2O3/water fit
-#      (deliberately run on ALL rows as a negative control)
-#   4. Shen et al. (2012): Maxwell + electrophoresis + Brownian,
-#      restricted to ZnO rows only
-#   5. New Correlation (this project): full Maxwell (shape factor +
-#      nanolayer generalised) + electrophoresis + Brownian, with
-#      Udawattha & Narayana (2018) viscosity
+#   1. Maxwell (1873)                — full mixing rule, spherical (n=3)
+#   2. Cruz et al. — modified Maxwell (insulating-particle limit, alpha->0)
+#   3. Ganguly et al. (2009)         — empirical, Al2O3/water fit
+#                                       (deliberately run on ALL rows as a
+#                                        negative control — see notes below)
+#   4. Shen et al. (2012)            — Maxwell + electrophoresis + Brownian,
+#                                       ZnO-in-oil specific
+#                                       (restricted to ZnO rows only — see notes)
+#   5. New Correlation (this project) — full Maxwell (shape-factor + nanolayer
+#                                       generalized) + electrophoresis + Brownian,
+#                                       with Udawattha & Narayana (2018) viscosity
 # Outputs: metrics table (R², MAE, RMSE, MAPE) per model
-#          + AI-generated commentary on the benchmark
+#          + AI-generated recommendation on best-fit model per system
 #
-# Notes for readers:
-#   - Predictions that are negative, NaN or infinite are treated as
-#     invalid and excluded from that model's metrics. For Ganguly et al.
-#     this removes the rows where its linear form returns negative
-#     (physically impossible) conductivities, which is why its number
-#     of valid points is below 509.
-#   - The "MD %" column equals MAPE by construction and is not reported
-#     separately in the manuscript.
-#   - Language model: Claude Sonnet 4.5 (claude-sonnet-4-5). The API key
-#     is read from the ANTHROPIC_API_KEY environment variable.
+# REVISION CHANGE: an input check (run during the revision as a separate
+# cell before this agent) is included after the Drive setup. It stops
+# unless the raw data file is the frozen 509-row dataset and the cleaned
+# file matches it row for row. The benchmarking code itself is unchanged.
 # ============================================================
 
 # ── CELL 1: INSTALL ─────────────────────────────────────────
@@ -61,6 +57,26 @@ def mount_drive():
 
 mount_drive()
 
+# ── REVISION: input check (frozen data and cleaned file) ─────
+import hashlib, pandas as pd
+D = "/content/drive/MyDrive/MANIS_ELECTRICAL/"
+EXPECTED = "6ba8ece5f49791fd1dee6deb7599a527fc90c49541b7b4b8cd31a010788d2f9b"
+
+assert hashlib.sha256(open(D + "nanofluid_ec_data.csv", "rb").read()).hexdigest() == EXPECTED, \
+    "Frozen data file changed. STOP."
+
+raw = pd.read_csv(D + "nanofluid_ec_data.csv")
+cln = pd.read_csv(D + "nanofluid_ec_data_clean.csv")
+assert len(cln) == 509 and cln.group_id.nunique() == 22, f"Clean file has {len(cln)} rows. Rerun Cleaning."
+
+k = ["group_id", "vf", "tk"]
+for d in (raw, cln):
+    d["vf"] = d.volume_fraction.round(6); d["tk"] = d.temperature_K.round(2)
+m = raw.merge(cln, on=k, suffixes=("_r", "_c"))
+diff = (m.electrical_conductivity_uScm_r - m.electrical_conductivity_uScm_c).abs().max()
+assert len(m) == 509 and diff == 0, "Clean file does not match frozen data. Rerun Cleaning."
+print("✅ Clean file matches frozen data (509 rows, 22 groups). Safe to run Benchmarking.")
+
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 # ── Physical constants ────────────────────────────────────────
@@ -70,39 +86,48 @@ N_A   = 6.02214076e23      # Avogadro constant     mol⁻¹
 
 # ── Fixed model parameters (agreed defaults) ──────────────────
 H_NM   = 1.0    # nanolayer thickness, nm (Udawattha default)
-PSI    = 1.0    # sphericity: spherical for ALL materials, including SiC
+PSI    = 1.0    # sphericity — spherical for ALL materials, including SiC
 N_SHAPE = 3.0 / PSI   # = 3 for all materials given PSI=1
 
 # ============================================================
 # NANOPARTICLE ELECTRICAL PROPERTIES LOOKUP
-# sigma_p   : bulk electrical conductivity, S/m. LOW CONFIDENCE overall;
+# sigma_p   : bulk electrical conductivity, S/m       — LOW CONFIDENCE overall;
 #             literature spread for these oxides spans many orders of
 #             magnitude depending on crystallinity/doping/impurity. Point
 #             values below are defensible single estimates, not measurements.
-# rho_p     : density, kg/m³. HIGH CONFIDENCE.
-# U0_mV     : |Zeta potential|, mV. MODERATE CONFIDENCE, literature
+# rho_p     : density, kg/m³                          — HIGH CONFIDENCE (matches TC script)
+# U0_mV     : |Zeta potential|, mV                     — MODERATE CONFIDENCE, literature
 #             typical range for aqueous/EG dispersions; treated as fixed
-#             default per material, ALWAYS USED AS ABSOLUTE VALUE.
+#             default per material, ALWAYS USED AS ABSOLUTE VALUE
 # ============================================================
 NP_EC_PROPS = {
-    # Source: Shen et al. (2012), Physics Letters A 376, 1053-1057 (direct citation)
+    # Source: Shen et al. (2012), Physics Letters A 376, 1053-1057 — DIRECT CITATION
     "ZNO":   {"sigma_p": 1.62e-6,  "rho_p": 5600, "U0_mV": 10},
-    # Bulk single-crystal alpha-Al2O3 is an excellent insulator; point estimate only
+    # sigma_p: bulk single-crystal alpha-Al2O3 is an excellent insulator;
+    # point estimate only — LOW CONFIDENCE
     "AL2O3": {"sigma_p": 1e-11,    "rho_p": 3970, "U0_mV": 40},
-    # TiO2: wide-bandgap, oxygen-vacancy-sensitive semiconductor; point estimate only
+    # sigma_p: TiO2 is a wide-bandgap, oxygen-vacancy-sensitive semiconductor;
+    # point estimate only — LOW CONFIDENCE
     "TIO2":  {"sigma_p": 1e-7,     "rho_p": 4230, "U0_mV": 30},
-    # CuO: narrow-bandgap p-type semiconductor, notably more conductive
+    # sigma_p: CuO is a narrow-bandgap p-type semiconductor, notably more
+    # conductive than the oxide insulators — LOW CONFIDENCE, wide spread
     "CUO":   {"sigma_p": 1e-1,     "rho_p": 6310, "U0_mV": 25},
-    # SiO2: well-established bulk insulator
+    # sigma_p: one of the best-established bulk insulators — LOW CONFIDENCE
+    # on exact value but directionally solid
     "SIO2":  {"sigma_p": 1e-11,    "rho_p": 2200, "U0_mV": 30},
-    # SiC: semi-insulating to highly conductive depending on polytype/doping
+    # sigma_p: SiC ranges from semi-insulating to highly conductive depending
+    # on polytype/doping — VERY LOW CONFIDENCE, shakiest entry in the table
     "SIC":   {"sigma_p": 1e-3,     "rho_p": 3160, "U0_mV": 20},
-    # Source: Dong et al. (2013), J. Nanomaterials 2013, 842963 (direct citation)
-    # AlN is not present in the final dataset; kept for completeness.
+    # Source: Dong et al. (2013), J. Nanomaterials 2013, 842963 — DIRECT CITATION
+    # (sigma_p = 1 pS/m, "theoretic value" used in the source paper itself)
     "ALN":   {"sigma_p": 1e-12,    "rho_p": 3260, "U0_mV": 20},
-    # CaCO3 (calcite): insulator, estimated as class-consistent with
-    # Al2O3/SiO2; rho_p = 2700 kg/m3 standard calcite density;
-    # U0 from food-grade/synthesised CaCO3 measurements (~12-16 mV)
+    # sigma_p: CaCO3 (calcite) is a well-established electrical insulator;
+    # no precise bulk conductivity figure found in literature, estimated
+    # as class-consistent with other insulating oxides (Al2O3/SiO2) —
+    # LOW CONFIDENCE. rho_p = 2700 kg/m3 is the standard calcite density,
+    # confirmed directly in literature — HIGH CONFIDENCE. U0 estimated
+    # from food-grade/synthesized CaCO3 nanoparticle Zeta potential
+    # measurements (~12-16 mV range) — MODERATE CONFIDENCE.
     "CACO3": {"sigma_p": 1e-10,    "rho_p": 2700, "U0_mV": 15},
 }
 
@@ -126,7 +151,9 @@ def props_EG(T):
 def props_transformer_oil(T):
     """Transformer (insulating) oil.
     eps_r matches Shen et al./Dong et al.'s own insulated-oil value (2.2).
-    mu, rho fitted from Patel et al. (2009) Table 1."""
+    mu, rho fitted from Patel et al. (2009) Table 1 — HIGH CONFIDENCE,
+    same source as the TC benchmarking script.
+    """
     Tc    = T - 273.15
     eps_r = 2.2
     rho   = 879.0 - 0.6*(Tc - 20.0)
@@ -134,20 +161,22 @@ def props_transformer_oil(T):
     return eps_r, mu, rho
 
 def props_peg200(T):
-    """PEG (MW~200). eps_r=19 from literature; mu, rho are
-    low-confidence literature-range estimates."""
+    """PEG (MW~200). eps_r=19 sourced from patent literature (ink
+    formulation refs). mu, rho are LOW CONFIDENCE literature-range
+    estimates, not directly measured for this exact system."""
     Tc    = T - 273.15
     eps_r = 19.0
-    mu    = 0.055 * np.exp(-0.02*(Tc - 20.0))   # ~55 mPa·s at 20C
+    mu    = 0.055 * np.exp(-0.02*(Tc - 20.0))   # ~55 mPa·s at 20C, rough decay
     rho   = 1125.0 - 0.6*(Tc - 20.0)
     return eps_r, mu, rho
 
 def props_bio_glycol(T):
-    """Bio Glycol, treated as bio-based 1,2-propanediol equivalent.
-    Low confidence across all three properties."""
+    """Bio Glycol — treated as bio-based 1,2-propanediol equivalent since no
+    distinct bulk constants exist for "bio glycol" specifically.
+    LOW CONFIDENCE across all three properties."""
     Tc    = T - 273.15
     eps_r = 28.0
-    mu    = 0.048 * np.exp(-0.025*(Tc - 20.0))  # ~48 mPa·s at 20C
+    mu    = 0.048 * np.exp(-0.025*(Tc - 20.0))  # ~48 mPa·s at 20C, rough decay
     rho   = 1036.0 - 0.6*(Tc - 20.0)
     return eps_r, mu, rho
 
@@ -174,7 +203,9 @@ def parse_mixture_ratio(name):
 
 def props_mixture(T, name):
     """Linear interpolation of (eps_r, mu_bf, rho_bf) between two pure
-    fluids by volume ratio (standard first-order approximation)."""
+    fluids by volume ratio. Simplification — dielectric/viscosity mixing
+    is not perfectly linear in reality, but this is the standard
+    first-order approximation. MODERATE CONFIDENCE."""
     parsed = parse_mixture_ratio(name)
     if parsed is None:
         return None
@@ -200,7 +231,8 @@ BASE_FLUID_EC_FN = {
 
 def get_base_fluid_props(T, base_fluid_name):
     """Looks up (eps_r, mu_bf, rho_bf) for a base fluid name. Falls back to
-    mixture interpolation for 'X:Y AA:BB' style names."""
+    mixture interpolation for 'X:Y AA:BB' style names not in the fixed
+    dict (e.g. 'Water:EG 90:10', 'Water:Pg 40:60')."""
     fn = BASE_FLUID_EC_FN.get(base_fluid_name)
     if fn is not None:
         return fn(T)
@@ -214,7 +246,8 @@ def get_base_fluid_props(T, base_fluid_name):
 # ============================================================
 
 def brownian_velocity_ec(T, rho_p, d_p_m):
-    """V_B = sqrt(18 R T / (pi N_A rho_p d_p^3)), Udawattha & Narayana form."""
+    """V_B = sqrt(18 R T / (pi N_A rho_p d_p^3)) — Udawattha & Narayana form,
+    R and N_A (not k_B) per the paper's own units convention."""
     return np.sqrt(18 * R * T / (np.pi * N_A * rho_p * d_p_m**3))
 
 def effective_phi(phi, h_m, r_m):
@@ -228,7 +261,7 @@ def interparticle_spacing(d_p_m, phi):
     return (np.pi * d_p_m**3 / (6*phi))**(1/3)
 
 def udawattha_viscosity(mu_bf, T, phi, d_p_m, rho_p):
-    """mu_nf = mu_bf * (1 + 2.5*phi_e + dynamic_term),
+    """mu_nf = mu_bf * (1 + 2.5*phi_e + dynamic_term)
     Udawattha & Narayana (2018) full model."""
     if phi <= 0:
         return mu_bf
@@ -249,8 +282,8 @@ def udawattha_viscosity(mu_bf, T, phi, d_p_m, rho_p):
 # ============================================================
 
 def model_maxwell(sigma_bf, sigma_p, phi, d_p_m, **kw):
-    """1. Maxwell (1873/1881): full mixing rule, generalised shape/nanolayer
-    at n=3 (spherical, PSI=1 for all materials)."""
+    """1. Maxwell (1873/1881) — full mixing rule, generalized shape/nanolayer
+    at n=3 (spherical, PSI=1 for all materials incl. SiC per agreed default)."""
     r_m = d_p_m / 2.0
     h_m = H_NM * 1e-9
     phi_e = effective_phi(phi, h_m, r_m)
@@ -260,22 +293,26 @@ def model_maxwell(sigma_bf, sigma_p, phi, d_p_m, **kw):
     return sigma_bf * num / den
 
 def model_cruz(sigma_bf, phi, **kw):
-    """2. Cruz et al.: modified Maxwell, insulating-particle limit (alpha->0)."""
+    """2. Cruz et al. — modified Maxwell, insulating-particle limit (alpha->0)"""
     return sigma_bf * (1 - 1.5*phi)
 
 def model_ganguly(sigma_bf, phi, T, **kw):
-    """3. Ganguly et al. (2009): empirical, fit to Al2O3/water.
-    Run on ALL rows deliberately as a negative control.
-    T is converted to Celsius per the original fit; phi as a plain fraction."""
+    """3. Ganguly et al. (2009) — empirical, fit to Al2O3/water.
+    Run on ALL rows deliberately as a negative control for the value of
+    mechanistic vs. purely empirical correlations (see header notes).
+    T must be in Celsius per the original fit; phi as a plain fraction."""
     T_C = T - 273.15
     return sigma_bf * (3679.049*phi + 1.085799*T_C - 42.6384)
 
 def model_shen(sigma_bf, sigma_p, phi, T, d_p_m, eps_r, U0_mV,
                mu_bf, rho_bf, lam=0.04, T0=313.15, **kw):
-    """4. Shen et al. (2012): Maxwell (linearised) + electrophoresis +
-    Brownian. Restricted to ZnO rows at the calling level. Uses Shen et
-    al.'s own viscosity submodel; T0 and lam are Shen et al.'s fitted
-    constants for ZnO-in-oil and are not re-fitted here."""
+    """4. Shen et al. (2012) — Maxwell(linearized) + electrophoresis +
+    Brownian. RESTRICTED TO ZnO ROWS ONLY at the calling level — see
+    run_all_models(). Uses Shen et al.'s own viscosity submodel
+    (Einstein-type polynomial + exponential T-law), NOT Udawattha, since
+    that submodel is inseparable from this specific paper's fit.
+    T0, lam are Shen et al.'s own fitted constants for ZnO-in-oil;
+    NOT re-fit here (see prior discussion on fairness)."""
     r_m  = d_p_m / 2.0
     U0   = abs(U0_mV) * 1e-3   # mV -> V, magnitude only
     upsilon = mu_bf / rho_bf   # kinematic viscosity, m^2/s
@@ -295,9 +332,10 @@ def model_shen(sigma_bf, sigma_p, phi, T, d_p_m, eps_r, U0_mV,
 
 def model_new_correlation(sigma_bf, sigma_p, phi, T, d_p_m, eps_r, U0_mV,
                            mu_bf, rho_p, **kw):
-    """5. New Correlation (this project): full generalised Maxwell
+    """5. New Correlation (this project) — full generalized Maxwell
     (shape factor + nanolayer) + electrophoresis + Brownian, with
-    Udawattha & Narayana (2018) viscosity substituted for mu_nf."""
+    Udawattha & Narayana (2018) viscosity substituted for mu_nf
+    throughout (NOT Shen et al.'s viscosity submodel)."""
     r_m = d_p_m / 2.0
     h_m = H_NM * 1e-9
     U0  = abs(U0_mV) * 1e-3
@@ -306,7 +344,7 @@ def model_new_correlation(sigma_bf, sigma_p, phi, T, d_p_m, eps_r, U0_mV,
     n = N_SHAPE
     num = sigma_p + (n-1)*sigma_bf + (n-1)*phi_e*(sigma_p - sigma_bf)
     den = sigma_p + (n-1)*sigma_bf -       phi_e*(sigma_p - sigma_bf)
-    sigma_M_ratio = num / den
+    sigma_M_ratio = num / den   # this is (1 + ...) already via H-C form
 
     mu_nf = udawattha_viscosity(mu_bf, T, phi, d_p_m, rho_p)
 
@@ -318,16 +356,17 @@ def model_new_correlation(sigma_bf, sigma_p, phi, T, d_p_m, eps_r, U0_mV,
     return sigma_bf * sigma_M_ratio + sigma_E + sigma_B
 
 # ── Model registry ─────────────────────────────────────────────
-# 'restrict' is an optional row filter: (row) -> bool. If provided, the
-# model is scored ONLY on rows where restrict(row) is True.
+# 'restrict' is an optional row-filter function: (row) -> bool.
+# If provided, the model is scored ONLY on rows where restrict(row) is True;
+# all other rows get NaN for this model (excluded from that model's metrics).
 MODELS = {
     "1. Maxwell (1873)": {
         "fn": model_maxwell, "restrict": None,
     },
-    "2. Cruz et al., insulating limit": {
+    "2. Cruz et al. — insulating limit": {
         "fn": model_cruz, "restrict": None,
     },
-    "3. Ganguly et al. (2009), empirical": {
+    "3. Ganguly et al. (2009) — empirical": {
         "fn": model_ganguly, "restrict": None,   # deliberately unrestricted
     },
     "4. Shen et al. (2012)": {
@@ -365,11 +404,11 @@ def compute_metrics(y_true, y_pred):
 # ============================================================
 
 def extract_sigma_bf_per_group(df):
-    """For each (group_id, temperature_K), takes sigma_bf from that
-    group's own volume_fraction==0 row (uS/cm -> S/m). Falls back to a
-    literature value for groups with NO phi=0 row at any temperature
-    (not triggered by the final dataset, in which every group has
-    phi=0 rows)."""
+    """For each (group_id, temperature_K), pulls sigma_bf from that
+    group's own volume_fraction==0 row (converted uS/cm -> S/m).
+    Falls back to a literature value for groups with NO phi=0 row at
+    ANY temperature (currently only Group 13: ALN/Transformer Oil,
+    per Dong et al. 2013 baseline — see prior discussion)."""
 
     UNIT_CONV = 1e-4   # uS/cm -> S/m
 
@@ -381,7 +420,11 @@ def extract_sigma_bf_per_group(df):
             for _, r in zero_rows.iterrows():
                 sigma_bf_map[(gid, r["temperature_K"])] = r["electrical_conductivity_uScm"] * UNIT_CONV
         else:
-            fallback_sigma_bf_Sm = 1.52e-12   # 1.52 pS/m, Dong et al. (2013)
+            # Fallback: Dong et al. (2013) literature value for transformer
+            # oil, applied uniformly across whatever temperatures this
+            # group actually has. Flagged as literature estimate, not
+            # independently measured at each T (see prior discussion).
+            fallback_sigma_bf_Sm = 1.52e-12   # 1.52 pS/m
             for T_val in grp["temperature_K"].unique():
                 sigma_bf_map[(gid, T_val)] = fallback_sigma_bf_Sm
 
@@ -402,7 +445,7 @@ def load_and_enrich_ec():
     if df.empty:
         return None, "❌ No valid rows after dropping NaNs."
 
-    # sigma_bf per group/temperature, taken from the data itself
+    # sigma_bf per group/temperature, pulled from the data itself
     sigma_bf_map = extract_sigma_bf_per_group(df)
     df["sigma_bf"] = df.apply(
         lambda r: sigma_bf_map.get((r["group_id"], r["temperature_K"]), np.nan), axis=1
@@ -479,8 +522,9 @@ def run_all_models_ec(df, selected_models):
                     rho_bf   = row["rho_bf"],
                     rho_p    = row["rho_p"],
                 )
-                # Only reject negative/NaN/inf (no fixed magnitude bound,
-                # since EC spans several orders of magnitude)
+                # Only reject negative/NaN/inf — no fixed magnitude bound
+                # (per agreed decision — EC spans too many orders of
+                # magnitude across this dataset for a single bound)
                 if not np.isfinite(pred) or pred < 0:
                     pred = np.nan
             except Exception:
@@ -523,7 +567,7 @@ def compute_all_per_nanoparticle_ec(results, model_names):
     return out
 
 # ============================================================
-# AI COMMENTARY STEP
+# AI RECOMMENDATION STEP
 # ============================================================
 
 def ai_analyze_benchmark_ec(metrics_df, per_np_metrics, n_rows, n_groups):
@@ -588,9 +632,9 @@ Be specific, cite the actual numbers, and keep each section to 3-4 sentences."""
 # GRADIO INTERFACE
 # ============================================================
 
-with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="MANIS — EC Model Benchmarking Agent", theme=gr.themes.Soft()) as app:
 
-    gr.Markdown("# ⚡ MANIS: Electrical Conductivity Theoretical Model Benchmarking Agent")
+    gr.Markdown("# ⚡ MANIS — Electrical Conductivity Theoretical Model Benchmarking Agent")
     gr.Markdown(
         "Reads experimental data and tests 5 electrical conductivity correlations.  \n"
         "Model 3 (Ganguly) runs on all rows as a deliberate negative control.  \n"
@@ -603,7 +647,7 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
 
     with gr.Tabs():
 
-        with gr.Tab("1: Load Data"):
+        with gr.Tab("1 — Load Data"):
             gr.Markdown("### Load experimental data from Google Drive")
             load_btn    = gr.Button("📂 Load Dataset", variant="primary", size="lg")
             load_status = gr.Textbox(label="Status", interactive=False, lines=5)
@@ -623,7 +667,7 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
 
             load_btn.click(do_load, outputs=[load_status, data_preview, df_state])
 
-        with gr.Tab("2: Run Models"):
+        with gr.Tab("2 — Run Models"):
             gr.Markdown("### Select models and run benchmark")
             model_selector = gr.CheckboxGroup(
                 choices=list(MODELS.keys()),
@@ -633,7 +677,7 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
             run_btn     = gr.Button("▶ Run Benchmark", variant="primary", size="lg")
             run_status  = gr.Textbox(label="Status", interactive=False, lines=2)
             metrics_tbl = gr.Dataframe(
-                label="📊 Model Metrics, sorted by R² (best first)",
+                label="📊 Model Metrics — sorted by R² (best first)",
                 interactive=False, wrap=True
             )
             pred_preview= gr.Dataframe(
@@ -660,7 +704,7 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
             run_btn.click(do_run, inputs=[df_state, model_selector],
                           outputs=[run_status, metrics_tbl, pred_preview, results_state, metrics_state])
 
-        with gr.Tab("3: Detailed Metrics"):
+        with gr.Tab("3 — Detailed Metrics"):
             gr.Markdown("### Per-nanoparticle metrics for a selected model")
             detail_model = gr.Dropdown(
                 choices=list(MODELS.keys()),
@@ -697,10 +741,10 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
             detail_btn.click(do_detail, inputs=[results_state, detail_model],
                              outputs=[detail_status, detail_tbl])
 
-        with gr.Tab("4: AI Commentary"):
+        with gr.Tab("4 — AI Recommendation"):
             gr.Markdown("### AI-Generated Benchmarking Commentary")
-            ai_btn      = gr.Button("🤖 Generate AI Commentary", variant="primary", size="lg")
-            ai_feedback = gr.Textbox(label="AI Commentary", interactive=False, lines=30)
+            ai_btn      = gr.Button("🤖 Generate AI Recommendation", variant="primary", size="lg")
+            ai_feedback = gr.Textbox(label="AI Recommendation", interactive=False, lines=30)
 
             def do_ai_analysis(results, metrics_df):
                 if results is None or metrics_df is None or len(metrics_df) == 0:
@@ -713,7 +757,7 @@ with gr.Blocks(title="MANIS: EC Model Benchmarking Agent", theme=gr.themes.Soft(
 
             ai_btn.click(do_ai_analysis, inputs=[results_state, metrics_state], outputs=[ai_feedback])
 
-        with gr.Tab("5: Google Drive"):
+        with gr.Tab("5 — Google Drive"):
             gr.Markdown("### Google Drive Status")
             gr.Markdown(
                 f"Reads from: `{EC_CSV}`  \n"
