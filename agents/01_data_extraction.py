@@ -1,5 +1,5 @@
 # ============================================================
-# MANIS SYSTEM: ELECTRICAL CONDUCTIVITY
+# MANIS SYSTEM — ELECTRICAL CONDUCTIVITY
 # AGENT 1: DATA EXTRACTION AI AGENT
 # ============================================================
 # Adapted from the thermal-conductivity Agent 1 (v4)
@@ -8,17 +8,6 @@
 # Columns         : nanoparticle, base_fluid, particle_size_nm,
 #                   volume_fraction, temperature_K,
 #                   electrical_conductivity_uScm
-#
-# Language model  : Claude Sonnet 4.5 (claude-sonnet-4-5), Anthropic API.
-# API key         : read from the ANTHROPIC_API_KEY environment variable
-#                   (in Colab: store it in Secrets and load it with
-#                   userdata.get("ANTHROPIC_API_KEY") before running).
-#
-# REVISION NOTE: parse_response() corrected. The earlier version applied
-# its truncated-output recovery to complete replies as well, which
-# discarded the final data point of every extraction call. The corrected
-# version parses complete replies in full and only salvages replies that
-# are actually truncated.
 # ============================================================
 
 import anthropic
@@ -57,7 +46,7 @@ NANOPARTICLES = [
     "Select...", "Al2O3", "CuO", "TiO2", "Fe3O4", "ZnO",
     "SiO2", "SiC", "hBN", "CNT", "MWCNT", "SWCNT",
     "Graphene", "Nano-diamond", "Fe2O3", "MgO", "Ag",
-    "Al", "ZrO2", "Fe", "Cu", "Mg(OH)2", "AlN", "CaCO3", "Other"
+    "Al", "ZrO2", "Fe","Cu","Mg(OH)2","AlN","CaCO3","Other"
 ]
 
 BASE_FLUIDS = [
@@ -67,7 +56,7 @@ BASE_FLUIDS = [
 ] + [
     "Synthetic Oil", "Engine Oil", "Propylene Glycol",
     "Glycerol", "Acetone", "Diatheric Oil",
-    "Heat Transfer Oil", "Transformer Oil", "Bio Glycol", "PEG200", "Water:PG 40:60", "Other"
+    "Heat Transfer Oil", "Transformer Oil","Bio Glycol", "PEG200", "Water:PG 40:60","Other"
 ]
 
 # ── Column definitions ────────────────────────────────────────
@@ -125,13 +114,6 @@ def encode_image(image):
     return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
 def parse_response(text):
-    """Parse the model's JSON reply.
-
-    Complete replies are parsed in full, so every data point is kept.
-    Only if the reply is truncated (invalid JSON) is it cut back to the
-    last complete record and closed, so the records before the cut are
-    recovered.
-    """
     text = text.strip()
     if "```json" in text:
         text = text.split("```json")[1]
@@ -140,16 +122,13 @@ def parse_response(text):
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
     text = text.strip()
+    last_complete = text.rfind('},')
+    if last_complete != -1 and not text.rstrip().endswith(']}}'):
+        text = text[:last_complete+1] + '\n    ]\n}'
     try:
-        return json.loads(text)                       # complete reply: keep every point
-    except json.JSONDecodeError:
-        last_complete = text.rfind('},')              # truncated reply only: salvage
-        if last_complete != -1:
-            try:
-                return json.loads(text[:last_complete+1] + '\n    ]\n}')
-            except json.JSONDecodeError as e:
-                return {"data": [], "error": str(e)}
-        return {"data": [], "error": "unparseable response"}
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        return {"data": [], "error": str(e)}
 
 # ============================================================
 # EXTRACTION FUNCTIONS
@@ -230,14 +209,14 @@ Return ONLY this JSON format:
 
 Rules:
 - Extract EVERY visible data point from ALL curves in the legend
-- Y-axis is electrical conductivity, commonly in uS/cm (microsiemens/cm); also watch
+- Y-axis is electrical conductivity, commonly in uS/cm (microsiemens/cm) — also watch
   for mS/cm or S/m and convert everything to uS/cm:
     1 S/m = 10,000 uS/cm
     1 mS/cm = 1,000 uS/cm
-- X-axis may be volume fraction (%), concentration, or temperature; read carefully
+- X-axis may be volume fraction (%), concentration, or temperature — read carefully
 - If volume fraction shown as a percentage (e.g. 0.5%), convert to decimal (0.005)
 - If temperature is in Celsius, convert to Kelvin (+273.15)
-- Each curve in the legend = different temperature or condition; extract ALL
+- Each curve in the legend = different temperature or condition — extract ALL
 - Use null for properties not visible in the figure
 - Return ONLY valid JSON, nothing else"""
 
@@ -371,7 +350,7 @@ def save_group(df, use_deleted_id, deleted_id_choice):
         existing = existing[existing["group_id"] != group_id]
         combined = pd.concat([existing, df], ignore_index=True)
         save_data(combined)
-        return (f"✅ Saved as Group {group_id}: {len(df)} records. "
+        return (f"✅ Saved as Group {group_id} — {len(df)} records. "
                 f"Total: {len(combined)} records."), refresh_dataset_view()
     except Exception as e:
         return f"Error: {str(e)}", refresh_dataset_view()
@@ -387,7 +366,7 @@ def delete_group(group_id_str):
         df = df[df["group_id"] != group_id]
         save_data(df)
         removed = before - len(df)
-        return (f"✅ Deleted Group {group_id}: {removed} records removed. "
+        return (f"✅ Deleted Group {group_id} — {removed} records removed. "
                 f"Remaining: {len(df)}."), \
                refresh_dataset_view(), refresh_group_dropdown()
     except Exception as e:
@@ -412,10 +391,10 @@ def get_group_summary():
         particle_size_nm=("particle_size_nm",                "first"),
         data_points     =("electrical_conductivity_uScm",    "count")
     ).reset_index()
-    summary.columns = ["Group ID", "Nanoparticle", "Base Fluid",
-                       "Particle Size (nm)", "Data Points"]
+    summary.columns = ["Group ID","Nanoparticle","Base Fluid",
+                       "Particle Size (nm)","Data Points"]
     total = summary["Data Points"].sum()
-    return f"{len(summary)} groups, {total} total data points", summary
+    return f"{len(summary)} groups — {total} total data points", summary
 
 
 # ============================================================
@@ -425,9 +404,9 @@ def get_group_summary():
 BATCH_COLS = ["Select column..."] + DATA_COLS
 CONDUCTIVITY_UNITS = ["S/m", "mS/cm", "uS/cm (no change)"]
 
-with gr.Blocks(title="MANIS: EC Data Extraction", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="MANIS — EC Data Extraction", theme=gr.themes.Soft()) as app:
 
-    gr.Markdown("# ⚡ MANIS: Electrical Conductivity Data Extraction Agent")
+    gr.Markdown("# ⚡ MANIS — Electrical Conductivity Data Extraction Agent")
     gr.Markdown(
         "Extract nanofluid **electrical conductivity** data from research paper images.  \n"
         f"Saves to `nanofluid_ec_data.csv` in Google Drive."
@@ -467,7 +446,7 @@ with gr.Blocks(title="MANIS: EC Data Extraction", theme=gr.themes.Soft()) as app
                     )
                     gr.Markdown("### Step 3: Review & Edit")
                     data_table = gr.Dataframe(
-                        label="Extracted Data (click any cell to edit)",
+                        label="Extracted Data — Click any cell to edit",
                         interactive=True,
                         wrap=True,
                         headers=DATA_COLS,
@@ -477,7 +456,7 @@ with gr.Blocks(title="MANIS: EC Data Extraction", theme=gr.themes.Soft()) as app
                         batch_col = gr.Dropdown(
                             choices=BATCH_COLS,
                             value="Select column...",
-                            label="Batch Fill: Column"
+                            label="Batch Fill — Column"
                         )
                         batch_val = gr.Textbox(label="Value to fill empty cells")
                         batch_btn = gr.Button("Fill Empty Cells", variant="secondary")
@@ -550,12 +529,12 @@ with gr.Blocks(title="MANIS: EC Data Extraction", theme=gr.themes.Soft()) as app
                 if os.path.exists(DRIVE_DIR):
                     files = [f for f in os.listdir(DRIVE_DIR) if f.endswith('.csv')]
                     if files:
-                        msgs = ["✅ Drive mounted, project folder found"]
+                        msgs = ["✅ Drive mounted — project folder found"]
                         for f in files:
                             size = os.path.getsize(DRIVE_DIR + f)
                             msgs.append(f"  {f} ({size:,} bytes)")
                         return "\n".join(msgs)
-                    return "✅ Drive mounted, folder exists but no CSV files yet."
+                    return "✅ Drive mounted — folder exists but no CSV files yet."
                 return "❌ Drive not mounted. Click Mount Drive."
 
             def do_mount():
@@ -567,7 +546,7 @@ with gr.Blocks(title="MANIS: EC Data Extraction", theme=gr.themes.Soft()) as app
         # ── TAB 4: FULL DATASET ───────────────────────────────
         with gr.Tab("Full Dataset"):
 
-            gr.Markdown("### Complete Dataset, sorted by group ID")
+            gr.Markdown("### Complete Dataset — sorted by group ID")
             with gr.Row():
                 view_btn      = gr.Button("🔄 Refresh Dataset", variant="secondary")
                 clear_all_btn = gr.Button("🗑️ Clear ALL Data",  variant="stop")
