@@ -9,6 +9,13 @@
 #                   volume_fraction, temperature_K,
 #                   electrical_conductivity_uScm
 # ============================================================
+# REVISION NOTE: parse_response() corrected. The original version applied
+# its truncated-reply recovery to complete replies as well, which discarded
+# the final data point of every extraction call. The corrected version
+# parses complete replies in full and only salvages truncated ones.
+# Everything else in this file is unchanged from the version used to
+# build the dataset.
+# ============================================================
 
 import anthropic
 import base64
@@ -122,13 +129,16 @@ def parse_response(text):
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
     text = text.strip()
-    last_complete = text.rfind('},')
-    if last_complete != -1 and not text.rstrip().endswith(']}}'):
-        text = text[:last_complete+1] + '\n    ]\n}'
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        return {"data": [], "error": str(e)}
+        return json.loads(text)                       # complete reply: keep every point
+    except json.JSONDecodeError:
+        last_complete = text.rfind('},')              # truncated reply only: salvage
+        if last_complete != -1:
+            try:
+                return json.loads(text[:last_complete+1] + '\n    ]\n}')
+            except json.JSONDecodeError as e:
+                return {"data": [], "error": str(e)}
+        return {"data": [], "error": "unparseable response"}
 
 # ============================================================
 # EXTRACTION FUNCTIONS
