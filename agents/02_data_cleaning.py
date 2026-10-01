@@ -18,7 +18,8 @@
 #   1. Frozen data guard: stops unless nanofluid_ec_data.csv is the
 #      frozen revision dataset (509 rows, 22 groups, SHA256 below).
 #   2. Duplicate stop: refuses to save if any rows would be removed
-#      as duplicates (this step previously deleted group 21 silently).
+#      as duplicates, so no records can be dropped silently (the
+#      duplicate check compares the physical fields, not group_id).
 # ============================================================
 
 import anthropic
